@@ -5902,6 +5902,227 @@ INT WINAPI IdnToUnicode(DWORD dwFlags, LPCWSTR lpASCIICharStr, INT cchASCIIChar,
     return out;
 }
 
+static WCHAR *_strmapW(const WCHAR *locale, DWORD flags, const WCHAR *str, INT len)
+{
+    WCHAR *ret;
+    DWORD size = (len + 1) * sizeof(WCHAR);
+    DWORD mapFlags = 0;
+    INT succeeds;
+
+    /* TODO: check LINGUISTIC_IGNORECASE is similar enough to LCMAP_UPPERCASE. */
+    if (flags & LINGUISTIC_IGNORECASE) mapFlags |= LCMAP_UPPERCASE;
+    if (flags & NORM_LINGUISTIC_CASING) mapFlags |= LCMAP_LINGUISTIC_CASING;
+    if (flags & NORM_IGNOREWIDTH) mapFlags |= LCMAP_HALFWIDTH;
+    if (flags & NORM_IGNOREKANATYPE) mapFlags |= LCMAP_HIRAGANA;
+
+    ret = HeapAlloc(GetProcessHeap(), 0, size);
+    if (ret)
+    {
+        succeeds = LCMapStringEx(locale, mapFlags, str, len, ret, len, NULL, NULL, 0);
+        if (!succeeds)
+        {
+            HeapFree(GetProcessHeap(), 0, ret);
+            return NULL;
+        }
+
+        /* Set the null terminator at the end of the string. */
+        ret[len] = 0;
+        return ret;
+    }
+
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return NULL;
+}
+
+static WCHAR *_wcsrev(WCHAR *str)
+{
+    WCHAR *ret = str;
+    WCHAR *end = str + lstrlenW(str) - 1;
+    while (end > str)
+    {
+        WCHAR t = *end;
+        *end--  = *str;
+        *str++  = t;
+    }
+    return ret;
+}
+
+/******************************************************************************
+ *            FindNLSString    (KERNEL32.@)
+ *
+ * Find a substring using a Unicode locale sensitive comparison.
+ *
+ * FindNLSStringEx should be used where possible.
+ *
+ * PARAMS
+ *  lcid          [I] Locale ID for the comparison
+ *  flags         [I] Flags for the comparison
+ *  source        [I] String that will be searched
+ *  source_len    [I] Length of source, or -1 if source is NUL terminated
+ *  value         [I] Value to find within the source string
+ *  value_len     [I] Length of value, or -1 if value is NUL terminated
+ *  found_len     [O] Length of found substring (not always equal to value_len)
+ *
+ * RETURNS
+ *  Success: Zero-based index into the string from the start.
+ *           If using FIND_FROMEND or FIND_ENDSWITH, this will be one character
+ *           after the end of the found substring.
+ *  Failure: -1. Use GetLastError() to determine the cause.
+ * NOTES
+ *  - GetLastError() will be overwritten, even if the function succeeds.
+ *  - If no FIND_* flags are specified, FIND_FROMSTART is the default.
+ *  - TODO: handle proper unicode normalization and locale-specific matching
+ */
+INT WINAPI FindNLSString(LCID lcid, DWORD flags,
+                         const WCHAR *source, INT source_len,
+                         const WCHAR *value, INT value_len,
+                         INT *found_len)
+{
+    const WCHAR locale[LOCALE_NAME_MAX_LENGTH] = {0};
+    LCIDToLocaleName(lcid, locale, LOCALE_NAME_MAX_LENGTH, 0);
+    return FinsNLSStringEx(locale, flags, source, source_len, value, value_len, found_len,
+                           NULL, NULL, 0);
+}
+
+/******************************************************************************
+ *           FindNLSStringEx    (KERNEL32.@)
+ *
+ * Find a substring using a Unicode locale sensitive comparison.
+ *
+ * PARAMS
+ *  locale        [I] Locale name for the comparison (may be NULL)
+ *  flags         [I] Flags for the search
+ *  source        [I] String that will be searched
+ *  source_len    [I] Length of source, or -1 if source is NUL terminated
+ *  value         [I] Value to find within the source string
+ *  value_len     [I] Length of value, or -1 if value is NUL terminated
+ *  found_len     [O] Length of found substring (not always equal to value_len)
+ *  version       [I] Reserved, must be NULL
+ *  reserved      [I] Reserved, must be NULL
+ *  lparam        [I] Reserved, must be 0
+ *
+ * RETURNS
+ *  Success: Zero-based index into the string from the start.
+ *           If using FIND_FROMEND or FIND_ENDSWITH, this will be one character
+ *           after the end of the found substring.
+ *  Failure: -1. Use GetLastError() to determine the cause.
+ * NOTES
+ *  - GetLastError() will be overwritten, even if the function succeeds.
+ *  - If no FIND_* flags are specified, FIND_FROMSTART is the default.
+ *  - TODO: handle proper unicode normalization and locale-specific matching
+ */
+INT WINAPI FindNLSStringEx(const WCHAR *locale, DWORD flags,
+                           const WCHAR *source, INT source_len,
+                           const WCHAR *value, INT value_len,
+                           INT *found_len,
+                           NLSVERSIONINFO *version, void *reserved, LPARAM sortHandle)
+{
+    WCHAR *source;
+    WCHAR *value;
+    const WCHAR *result;
+    DWORD supported_flags = FIND_FROMSTART | FIND_FROMEND | FIND_STARTSWITH | FIND_ENDSWITH |
+                            NORM_IGNORECASE | LINGUISTIC_IGNORECASE | NORM_LINGUISTIC_CASING |
+                            NORM_IGNOREWIDTH | NORM_IGNOREKANATYPE;
+    DWORD semistub_flags = NORM_IGNORESYMBOLS | NORM_IGNORENONSPACE | LINGUISTIC_IGNOREDIACRITIC;
+
+    INT ret = -1;
+    static INT once;
+
+    /* Last error is cleared no matter what, as this indicates no result was found. */
+    SetLastError(ERROR_SUCCESS);
+
+    if (version || reserved || sortHandle || source_len < -1 || value_len < -1)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return -1;
+    }
+
+    if (flags & ~(supported_flags | semistub_flags))
+    {
+        SetLastError(ERROR_INVALID_FLAGS);
+        return -1;
+    }
+
+    if (flags & semistub_flags)
+    {
+        if (!once++) FIXME("(%s, 0x%x): semi-stub\n", debugstr_w(locale), flags);
+    }
+
+    /* Technically zero is invalid but I would guess that blocking it would break code. */
+    if (source_len == -1) source_len = lstrlenW(source);
+    if (value_len == -1) value_len = lstrlenW(value);
+
+    source = _strmapW(locale, flags, source, source_len);
+    if (!source) return -1;
+
+    value = _strmapW(locale, flags, value, value_len);
+    if (!value) return -1;
+
+    if (flags & NORM_IGNORECASE)
+    {
+        struprW(source);
+        struprW(value);
+    }
+
+    /* NOTE: This only works because we haven't implemented proper Unicode comparsion.
+     * Reversing a UTF-16 string is more complicated than just reversing its bytes.
+     */
+    if (flags & FIND_FROMEND || flags & FIND_ENDSWITH)
+    {
+        _wcsrev(source);
+        _wcsrev(value);
+    }
+
+    /* Points to the first character of the found substring in source. */
+    result = strstrW(source, value);
+
+    /* TODO: do we need to handle mutually exclusive flags? */
+    if (flags & FIND_STARTSWITH)
+    {
+        if (result == source) ret = 0;
+        else ret = -1;
+    }
+    else if (flags & FIND_ENDSWITH)
+    {
+        /* http://archives.miloush.net/michkap/archive/2006/01/25/517586.html
+         * Returns an index value one greater than the last character of the string.
+         */
+        if (result == source) ret = source_len;
+        else ret = -1;
+    }
+    else if (flags & FIND_FROMEND)
+    {
+        /* TODO: Check this is right: assuming similar behavior to FIND_ENDSWITH.
+         *                             1
+         *         0 1 2 3 4 5 6 7 8 9 0
+         * Source: |a|b|c|d|e|f|g|h|i|j|
+         * Value:            |f|g|h|
+         *         ------------------->^   10 (source_len)
+         *                         ^<---  - 2 (result - source)
+         */
+        if (result) ret = source_len - (result - source);
+        else ret = -1;
+    }
+    else
+    {
+        /* If no FIND flags specified, FROMSTART is the default. */
+        if (result) ret = result - source;
+        else ret = -1;
+    }
+
+    /* Because we don't actually do any "proper" Unicode normalization, the found substring
+     * will always have the same length as the search string. (semi-stub)
+     */
+    if (ret >= 0) *found_len = value_len;
+
+    TRACE("(flags = %i, haystack = %s, needle = %s, ret = %i)\n",
+          flags, debugstr_w(source), debugstr_w(value), ret);
+
+    HeapFree(GetProcessHeap(), 0, source);
+    HeapFree(GetProcessHeap(), 0, value);
+    return ret;
+}
+
 
 /******************************************************************************
  *           GetFileMUIPath (KERNEL32.@)

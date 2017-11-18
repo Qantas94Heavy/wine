@@ -82,6 +82,8 @@ static BOOL (WINAPI *pEnumLanguageGroupLocalesA)(LANGGROUPLOCALE_ENUMPROCA, LGRP
 static BOOL (WINAPI *pEnumUILanguagesA)(UILANGUAGE_ENUMPROCA, DWORD, LONG_PTR);
 static BOOL (WINAPI *pEnumSystemLocalesEx)(LOCALE_ENUMPROCEX, DWORD, LPARAM, LPVOID);
 static INT (WINAPI *pLCMapStringEx)(LPCWSTR, DWORD, LPCWSTR, INT, LPWSTR, INT, LPNLSVERSIONINFO, LPVOID, LPARAM);
+static INT (WINAPI *pFindNLSString)(LCID, DWORD, const WCHAR *, INT, const WCHAR *, INT, INT *);
+static INT (WINAPI *pFindNLSStringEx)(const WCHAR *, DWORD, const WCHAR *, INT, const WCHAR *, INT, INT *, NLSVERSIONINFO *, void *, LPARAM);
 static LCID (WINAPI *pLocaleNameToLCID)(LPCWSTR, DWORD);
 static INT  (WINAPI *pLCIDToLocaleName)(LCID, LPWSTR, INT, DWORD);
 static INT (WINAPI *pFoldStringA)(DWORD, LPCSTR, INT, LPSTR, INT);
@@ -135,6 +137,8 @@ static void InitFunctionPointers(void)
   X(GetThreadPreferredUILanguages);
   X(GetUserPreferredUILanguages);
   X(GetNumberFormatEx);
+  X(FindNLSString);
+  X(FindNLSStringEx);
 
   mod = GetModuleHandleA("ntdll");
   X(RtlUpcaseUnicodeChar);
@@ -5329,6 +5333,145 @@ static void test_GetUserPreferredUILanguages(void)
     HeapFree(GetProcessHeap(), 0, buffer);
 }
 
+static void test_FindNLSString(void)
+{
+    INT ret;
+    INT found_len;
+    LCID invalid_lcid = -1;
+
+    if (!pFindNLSString)
+    {
+        win_skip("FindNLSString is not available\n");
+        return;
+    }
+
+    trace("testing FindNLSString\n");
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSString(invalid_lcid, NORM_IGNORECASE,
+                         upper_case, -1, lower_case, -1, &found_len);
+    todo_wine {
+    ok(!ret, "should fail with bad locale ID\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER,
+       "unexpected error code %d\n", GetLastError());
+    }
+}
+
+static void test_FindNLSStringEx(void)
+{
+    static WCHAR stringW[] = { 's','T','r','I','n','G',0 };
+
+    INT ret;
+    INT found_len;
+
+    if (!pFindNLSStringEx)
+    {
+        win_skip("FindNLSStringEx is not available\n");
+        return;
+    }
+
+    trace("testing FindNLSStringEx\n");
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(invalidW, FIND_FROMSTART,
+                           upper_case, -1, lower_case, -1, &found_len,
+                           NULL, NULL, 0);
+    todo_wine {
+    ok(!ret, "should fail with bad locale name\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "unexpected error code %d\n", GetLastError());
+    }
+
+    /* Default flag should be FIND_FROMSTART. */
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, 0,
+                           upper_case, -1, stringW, -1, &found_len,
+                           NULL, NULL, 0);
+    ok(ret == 16, "ret %d, error %d, expected value 16\n", ret, GetLastError());
+    ok(found_len == lstrlenW(stringW), "found len %d, error %d, expected value %d\n",
+       ret, GetLastError(), lstrlenW(stringW));
+    ok(GetLastError() == ERROR_SUCCESS, "unexpected error code %d\n", GetLastError());
+
+    /* Make sure mutually exclusive flags are not passed.
+     * TODO: can we just treat this as undefined behavior?
+     */
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART | FIND_ENDSWITH,
+                           lower_case, -1, upper_case, -1, &found_len,
+                           NULL, NULL, 0);
+    todo_wine {
+    ok(ret == -1, "should fail with invalid flags\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "unexpected error code %d\n", GetLastError());
+    }
+
+    /* Check what happens with empty string. MSDN says that length of zero is invalid
+     * but I doubt it actually causes an error.
+     * TODO: update with results
+     */
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART,
+                           upper_case, -1, emptyW, -1, &found_len,
+                           NULL, NULL, 0);
+    ok(ret == 0, "ret %d, error %d, expected value 0\n", ret, GetLastError());
+    ok(GetLastError() == ERROR_SUCCESS, "unexpected error code %d\n", GetLastError());
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART,
+                           upper_case, -1, emptyW, 0, &found_len,
+                           NULL, NULL, 0);
+    ok(ret == 0, "ret %d, error %d, expected value 0\n", ret, GetLastError());
+    ok(GetLastError() == ERROR_SUCCESS, "unexpected error code %d\n", GetLastError());
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMEND,
+                           upper_case, -1, emptyW, -1, &found_len,
+                           NULL, NULL, 0);
+    ok(ret == lstrlenW(upper_case) + 1, "ret %d, error %d, expected value %d\n",
+       ret, GetLastError(), lstrlenW(upper_case) + 1);
+    ok(GetLastError() == ERROR_SUCCESS, "unexpected error code %d\n", GetLastError());
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_ENDSWITH,
+                           emptyW, -1, emptyW, -1, &found_len,
+                           NULL, NULL, 0);
+    ok(ret == 1, "ret %d, error %d, expected value %d\n",
+       ret, GetLastError(), lstrlenW(upper_case) + 1);
+    ok(GetLastError() == ERROR_SUCCESS, "unexpected error code %d\n", GetLastError());
+
+    /* test reserved parameters */
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART,
+                           upper_case, -1, lower_case, -1, &found_len,
+                           NULL, NULL, 1);
+    ok(ret == -1, "should fail with invalid flags\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "unexpected error code %d\n", GetLastError());
+
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pFindNLSStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART,
+                           upper_case, -1, lower_case, -1, &found_len,
+                           NULL, (void*)1, 0);
+    ok(ret == -1, "should fail with invalid flags\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "unexpected error code %d\n", GetLastError());
+
+    /* TODO: see if this also crashes on native (this crashes for LCMapStringEx on Windows) */
+    found_len = 0xdeadbeef;
+    SetLastError(0xdeadbeef);
+    ret = pLCMapStringEx(LOCALE_NAME_USER_DEFAULT, FIND_FROMSTART,
+                        upper_case, -1, lower_case, -1, &found_len,
+                        (void*)1, NULL, 0);
+    ok(ret == -1, "should fail with invalid flags\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "unexpected error code %d\n", GetLastError());
+}
+
 START_TEST(locale)
 {
   InitFunctionPointers();
@@ -5375,6 +5518,8 @@ START_TEST(locale)
   test_GetSystemPreferredUILanguages();
   test_GetThreadPreferredUILanguages();
   test_GetUserPreferredUILanguages();
+  test_FindNLSString();
+  test_FindNLSStringEx();
   /* this requires collation table patch to make it MS compatible */
   if (0) test_sorting();
 }

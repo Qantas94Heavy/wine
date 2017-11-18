@@ -404,6 +404,12 @@ static const WCHAR LOCALE_NAME_SYSTEM_DEFAULT[] = {'!','s','y','s','-','d','e','
 #define LCMAP_SIMPLIFIED_CHINESE  0x02000000 /* Transform Chinese traditional into simplified */
 #define LCMAP_TRADITIONAL_CHINESE 0x04000000 /* Transform Chinese simplified into traditional */
 
+/* String search find flags */
+#define FIND_STARTSWITH 0x00100000
+#define FIND_ENDSWITH   0x00200000
+#define FIND_FROMSTART  0x00400000
+#define FIND_FROMEND    0x00800000
+
 /* Date and time formatting flags */
 #define DATE_SHORTDATE          0x01  /* Short date format */
 #define DATE_LONGDATE           0x02  /* Long date format */

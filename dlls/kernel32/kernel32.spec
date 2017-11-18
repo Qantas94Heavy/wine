@@ -504,8 +504,8 @@
 @ stub FindNextVolumeMountPointA
 @ stub FindNextVolumeMountPointW
 @ stdcall FindNextVolumeW(long ptr long)
-# @ stub FindNLSString
-# @ stub FindNLSStringEx
+@ stdcall FindNLSString(long long wstr long wstr long ptr)
+@ stdcall FindNLSStringEx(wstr long wstr long wstr long ptr ptr ptr long)
 @ stdcall FindResourceA(long str str)
 @ stdcall FindResourceExA(long str str long)
 @ stdcall FindResourceExW(long wstr wstr long)
